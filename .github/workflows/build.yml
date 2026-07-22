@@ -6,8 +6,8 @@
 #
 # 关键点（相比上游 tiny-tailscale 的两处改动）：
 #   1) 矩阵只编 arm + GOARM=7（= armv7，匹配 CR8809 的 Cortex-A7；上游默认 GOARM=6）
-#   2) 守护进程 build tags 用 --min --add=osrouter,iptables（必含 osrouter，否则 daemon 启动即退）
-#      另单独编一个带 cli 的 tailscale 二进制，留作 /tmp 临时配置用（见方案文档 §12.5）
+#   2) 守护进程 build tags 用 --min --add=osrouter,iptables,cli（必含 osrouter，否则 daemon 启动即退；
+#      cli 让单一 tailscaled 二进制同时具备 CLI 能力，软链 tailscale->tailscaled 复用，无需独立 CLI 文件）
 #
 # 构建方式：CGO_ENABLED=0 静态链接 → 零 libc 依赖 → 不依赖路由的 musl 版本（ABI 安全）
 # 不需要 OpenWrt SDK、不需要 musl 交叉工具链；ubuntu-latest runner 自带 Go。
@@ -116,7 +116,7 @@ jobs:
           # 故用 --add=osrouter,iptables 补回必需组件。netstack(userspace)本机走 TUN 模式用不到，不加更省体积。
           TAGS=$(CGO_ENABLED=0 go run ./cmd/featuretags \
             --min \
-            --add=osrouter,iptables)
+            --add=osrouter,iptables,cli)
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
           echo "Build tags: ${TAGS}"
 
