@@ -6,7 +6,7 @@
 #
 # 关键点（相比上游 tiny-tailscale 的两处改动）：
 #   1) 矩阵只编 arm + GOARM=7（= armv7，匹配 CR8809 的 Cortex-A7；上游默认 GOARM=6）
-#   2) 生成 build tags 时去掉 cli → 只产出守护进程 tailscaled（纯 tailscaled）
+#   2) 守护进程 build tags 用 --min --add=osrouter,iptables（必含 osrouter，否则 daemon 启动即退）
 #      另单独编一个带 cli 的 tailscale 二进制，留作 /tmp 临时配置用（见方案文档 §12.5）
 #
 # 构建方式：CGO_ENABLED=0 静态链接 → 零 libc 依赖 → 不依赖路由的 musl 版本（ABI 安全）
@@ -105,13 +105,15 @@ jobs:
           echo "long=${VERSION_LONG}" >> "$GITHUB_OUTPUT"
           echo "short=${VERSION_SHORT}" >> "$GITHUB_OUTPUT"
 
-      - name: 生成 build tags（不含 cli → 纯 tailscaled）
+      - name: 生成 build tags（守护进程，含 OSRouter + iptables）
         id: tags
         run: |
-          # 改动2：--add 里不写 cli → 只产守护进程；加 iptables 保证防火墙规则可写
+          # 守护进程必须含 osrouter（系统路由/DNS 配置器，否则 daemon 启动即退）；
+          # --min 会 omit 所有 feature（含 netstack+osrouter）仅用于 benchmark，
+          # 故用 --add=osrouter,iptables 补回必需组件。netstack(userspace)本机走 TUN 模式用不到，不加更省体积。
           TAGS=$(CGO_ENABLED=0 go run ./cmd/featuretags \
             --min \
-            --add=iptables)
+            --add=osrouter,iptables)
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
           echo "Build tags: ${TAGS}"
 
@@ -142,7 +144,7 @@ jobs:
           # 不能复用 daemon 的 tags 后硬拼 ",cli"（cli 不是合法 build tag，会导致 CLI 功能缺失/编译异常）
           # 注意：featuretags 是给 runner(amd64) 本地执行的小工具，必须强制 GOARCH=amd64，
           # 否则会被上面 export 的 GOARCH=arm 污染、交叉编译成 arm 后在 x86 runner 上 exec format error（已踩坑）。
-          CLI_TAGS=$(CGO_ENABLED=0 GOARCH=amd64 GOARM= go run ./cmd/featuretags --min --add=iptables,cli)
+          CLI_TAGS=$(CGO_ENABLED=0 GOARCH=amd64 GOARM= go run ./cmd/featuretags --min --add=osrouter,iptables,cli)
           echo "CLI build tags: ${CLI_TAGS}"
           go build -o tailscale -trimpath \
             -tags "${CLI_TAGS}" \
