@@ -90,6 +90,9 @@ jobs:
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
           git remote add upstream https://github.com/tailscale/tailscale.git || true
+          # 清理本仓库可能残留的同名 tag（首次构建的 release 遗留，指向本仓库 main 而非上游 commit），
+          # 否则 git fetch upstream tag 会因 "would clobber existing tag" 被拒
+          git tag -d "$VERSION" 2>/dev/null || true
           git fetch upstream tag "$VERSION" --no-tags
           git checkout "$VERSION"
 
@@ -184,8 +187,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check-version.outputs.version }}
         run: |
+          # 重新构建场景：清理可能残留的旧 release（tag 保留，GitHub 会复用）
+          gh release delete "${VERSION}" -y 2>/dev/null || true
           gh release create "${VERSION}" \
             --repo "${{ github.repository }}" \
             --title "tailscale-armv7 ${VERSION}" \
-            --notes "纯 tailscaled（无 CLI）+ 独立 tailscale CLI，ARMv7(GOARM=7) 静态链接(CGO_ENABLED=0)，用于 CR8809(OpenWrt 21.02.7)。" \
+            --notes "守护进程 tailscaled(含 OSRouter+iptables) + 独立 tailscale CLI，ARMv7(GOARM=7) 静态链接(CGO_ENABLED=0)，用于 CR8809(OpenWrt 21.02.7)。" \
             artifacts/tailscale-armv7_*.tgz
