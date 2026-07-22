@@ -140,7 +140,9 @@ jobs:
           fi
           # CLI 二进制的 tags 必须显式 --add=cli（featuretags 才会输出 ts_include_cli 并保留其依赖）；
           # 不能复用 daemon 的 tags 后硬拼 ",cli"（cli 不是合法 build tag，会导致 CLI 功能缺失/编译异常）
-          CLI_TAGS=$(CGO_ENABLED=0 go run ./cmd/featuretags --min --add=iptables,cli)
+          # 注意：featuretags 是给 runner(amd64) 本地执行的小工具，必须强制 GOARCH=amd64，
+          # 否则会被上面 export 的 GOARCH=arm 污染、交叉编译成 arm 后在 x86 runner 上 exec format error（已踩坑）。
+          CLI_TAGS=$(CGO_ENABLED=0 GOARCH=amd64 GOARM= go run ./cmd/featuretags --min --add=iptables,cli)
           echo "CLI build tags: ${CLI_TAGS}"
           go build -o tailscale -trimpath \
             -tags "${CLI_TAGS}" \
