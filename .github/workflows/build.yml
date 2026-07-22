@@ -1,13 +1,16 @@
 # =============================================================================
-# 在 GitHub Actions 上交叉编译 CR8809 用的 Tailscale（纯 tailscaled + 独立 CLI）
+# 在 GitHub Actions 上交叉编译 CR8809 用的 Tailscale（单二进制 tailscaled，内嵌 cli，软链 tailscale 复用）
 #
 # 放置位置：在你的 GitHub 仓库里存为  .github/workflows/build.yml
 # 触发方式：仓库 Actions 页 → 选本工作流 → "Run workflow" → version 填 v1.98.9（或留空追最新稳定版）
 #
 # 关键点（相比上游 tiny-tailscale 的两处改动）：
 #   1) 矩阵只编 arm + GOARM=7（= armv7，匹配 CR8809 的 Cortex-A7；上游默认 GOARM=6）
-#   2) 守护进程 build tags 用 --min --add=osrouter,iptables,cli（必含 osrouter，否则 daemon 启动即退；
-#      cli 让单一 tailscaled 二进制同时具备 CLI 能力，软链 tailscale->tailscaled 复用，无需独立 CLI 文件）
+#   2) 守护进程 build tags 用单二进制(ts_include_cli)：--min --add=osrouter,iptables,cli,unixsocketidentity,
+#      advertiseroutes,useroutes,relayserver,portmapper（必含 osrouter 否则 daemon 启动即退；unixsocketidentity
+#      是 LocalAPI 本地 root 鉴权，缺失则 CLI 全 403；advertiseroutes/useroutes 为 subnet route 必需；
+#      relayserver/portmapper 为 DERP 中继兜底+NAT 穿透；netstack(userspace)走 TUN 模式用不到故 omit 省 RAM）。
+#      cli 让单一 tailscaled 二进制同时具备 CLI 能力，软链 tailscale->tailscaled 复用，无需独立 CLI 文件。
 #
 # 构建方式：CGO_ENABLED=0 静态链接 → 零 libc 依赖 → 不依赖路由的 musl 版本（ABI 安全）
 # 不需要 OpenWrt SDK、不需要 musl 交叉工具链；ubuntu-latest runner 自带 Go。
@@ -108,19 +111,24 @@ jobs:
           echo "long=${VERSION_LONG}" >> "$GITHUB_OUTPUT"
           echo "short=${VERSION_SHORT}" >> "$GITHUB_OUTPUT"
 
-      - name: 生成 build tags（守护进程，含 OSRouter + iptables）
+      - name: 生成 build tags（单二进制 daemon，含 OSRouter + iptables + cli + 本地鉴权）
         id: tags
         run: |
-          # 守护进程必须含 osrouter（系统路由/DNS 配置器，否则 daemon 启动即退）；
-          # --min 会 omit 所有 feature（含 netstack+osrouter）仅用于 benchmark，
-          # 故用 --add=osrouter,iptables 补回必需组件。netstack(userspace)本机走 TUN 模式用不到，不加更省体积。
+          # 单二进制：ts_include_cli 让 tailscaled 同时具备 CLI 能力（软链 tailscale->tailscaled 复用），
+          # 编译为 ./cmd/tailscaled 并带 cli tag 即可，无需独立 CLI 文件。
+          # 关键：--min 会 omit 所有 feature（含 netstack+osrouter+unixsocketidentity）。
+          #   - osrouter/iptables：TUN 模式 subnet router 必需（系统路由+防火墙），否则 daemon 启动即退；
+          #   - unixsocketidentity：LocalAPI 本地 root 鉴权(peercred/SO_PEERCRED)，缺失则 CLI 全 403（已踩坑）；
+          #   - advertiseroutes/useroutes：--advertise-routes 子网路由与接受路由必需；
+          #   - relayserver/portmapper：DERP 中继兜底 + NAT 穿透，连通性必需。
+          #   - netstack(userspace)本机走 TUN 模式(kmod-tun 已装、Userspace:false)用不到，故意 omit 省 RAM。
           TAGS=$(CGO_ENABLED=0 go run ./cmd/featuretags \
             --min \
-            --add=osrouter,iptables,cli)
+            --add=osrouter,iptables,cli,unixsocketidentity,advertiseroutes,useroutes,relayserver,portmapper)
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
           echo "Build tags: ${TAGS}"
 
-      - name: 编译纯 tailscaled（常驻守护进程，无 CLI）
+      - name: 编译单二进制 tailscaled（常驻守护进程，内嵌 cli）
         run: |
           export CGO_ENABLED=0
           export GOOS=${{ matrix.goos }}
@@ -135,27 +143,6 @@ jobs:
               -X tailscale.com/version.shortStamp=${{ steps.version.outputs.short }}" \
             ./cmd/tailscaled
 
-      - name: 编译 tailscale CLI（独立二进制，/tmp 临时配置用）
-        run: |
-          export CGO_ENABLED=0
-          export GOOS=${{ matrix.goos }}
-          export GOARCH=${{ matrix.goarch }}
-          if [ -n "${{ matrix.goextra }}" ]; then
-            export ${{ matrix.goextra }}
-          fi
-          # CLI 二进制的 tags 必须显式 --add=cli（featuretags 才会输出 ts_include_cli 并保留其依赖）；
-          # 不能复用 daemon 的 tags 后硬拼 ",cli"（cli 不是合法 build tag，会导致 CLI 功能缺失/编译异常）
-          # 注意：featuretags 是给 runner(amd64) 本地执行的小工具，必须强制 GOARCH=amd64，
-          # 否则会被上面 export 的 GOARCH=arm 污染、交叉编译成 arm 后在 x86 runner 上 exec format error（已踩坑）。
-          CLI_TAGS=$(CGO_ENABLED=0 GOARCH=amd64 GOARM= go run ./cmd/featuretags --min --add=osrouter,iptables,cli)
-          echo "CLI build tags: ${CLI_TAGS}"
-          go build -o tailscale -trimpath \
-            -tags "${CLI_TAGS}" \
-            -ldflags "-s -w \
-              -X tailscale.com/version.longStamp=${{ steps.version.outputs.long }} \
-              -X tailscale.com/version.shortStamp=${{ steps.version.outputs.short }}" \
-            ./cmd/tailscale
-
       - name: 打包
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
@@ -163,7 +150,6 @@ jobs:
           DIR="tailscale-armv7_${VERSION}"
           mkdir "$DIR"
           mv tailscaled "$DIR/"
-          mv tailscale "$DIR/"
           tar czf "${DIR}.tgz" "$DIR"
 
       - name: 上传构建产物
@@ -192,5 +178,5 @@ jobs:
           gh release create "${VERSION}" \
             --repo "${{ github.repository }}" \
             --title "tailscale-armv7 ${VERSION}" \
-            --notes "守护进程 tailscaled(含 OSRouter+iptables) + 独立 tailscale CLI，ARMv7(GOARM=7) 静态链接(CGO_ENABLED=0)，用于 CR8809(OpenWrt 21.02.7)。" \
+            --notes "单二进制 tailscaled(内嵌 cli, 软链 tailscale->tailscaled 复用；含 OSRouter+iptables+unixsocketidentity 本地鉴权+subnet route+DERP/NAT 穿透)，ARMv7(GOARM=7) 静态链接(CGO_ENABLED=0)，用于 CR8809(OpenWrt 21.02.7)。" \
             artifacts/tailscale-armv7_*.tgz
