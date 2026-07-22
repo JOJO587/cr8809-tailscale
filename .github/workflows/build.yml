@@ -121,10 +121,12 @@ jobs:
           #   - unixsocketidentity：LocalAPI 本地 root 鉴权(peercred/SO_PEERCRED)，缺失则 CLI 全 403（已踩坑）；
           #   - advertiseroutes/useroutes：--advertise-routes 子网路由与接受路由必需；
           #   - relayserver/portmapper：DERP 中继兜底 + NAT 穿透，连通性必需。
+          #   - ipnbus：进程间通知总线；tailscale up/login 的交互式登录链接靠它推给 CLI 打印，
+          #              --min 默认 omit 会导致 "not waiting for completion" 且不显示链接（已踩坑）。GuNanOvO 配方默认保留。
           #   - netstack(userspace)本机走 TUN 模式(kmod-tun 已装、Userspace:false)用不到，故意 omit 省 RAM。
           TAGS=$(CGO_ENABLED=0 go run ./cmd/featuretags \
             --min \
-            --add=osrouter,iptables,cli,unixsocketidentity,advertiseroutes,useroutes,relayserver,portmapper)
+            --add=osrouter,iptables,cli,unixsocketidentity,advertiseroutes,useroutes,relayserver,portmapper,ipnbus)
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
           echo "Build tags: ${TAGS}"
 
